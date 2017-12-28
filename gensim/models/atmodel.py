@@ -902,13 +902,11 @@ class AuthorTopicModel(LdaModel):
 
         # TODO: how should this function look like for get_new_author_topics?
         def rho():
-            return pow(self.offset + 1 + 1, -self.decay)
+            return pow(self.offset + _pass + 1, -self.decay)
 
         # Wrap in fuction to avoid code duplication.
         def rollback_new_author_chages():
             self.state.gamma = self.state.gamma[0:-1]
-            for doc in corpus:
-                self.corpus.remove(doc)
 
             del self.author2doc[new_author_name]
             a_id = self.author2id[new_author_name]
@@ -918,7 +916,6 @@ class AuthorTopicModel(LdaModel):
             for new_doc_id in corpus_doc_idx:
                 del self.doc2author[new_doc_id]
 
-            self.total_docs -= len_input_corpus
             self.num_authors -= num_new_authors
 
         try:
@@ -935,12 +932,8 @@ class AuthorTopicModel(LdaModel):
 
         new_author_name = "placeholder_name"
 
-        # Add new documents in corpus to self.corpus.
-        self.extend_corpus(corpus)
 
-        corpus_doc_idx = list(range(self.total_docs, len_input_corpus+self.total_docs))
-        # Increment number of total docs.
-        self.total_docs += len_input_corpus
+        corpus_doc_idx = list(range(0, len_input_corpus))
 
         # Add the new placeholder author to author2id/id2author dictionaries.
         num_new_authors = 1
@@ -953,27 +946,69 @@ class AuthorTopicModel(LdaModel):
 
         # Add new author in author2doc and doc into doc2author.
         self.author2doc[new_author_name] = corpus_doc_idx
+
         for new_doc_id in corpus_doc_idx:
             self.doc2author[new_doc_id] = [new_author_name]
 
         gamma_new = self.random_state.gamma(100., 1. / 100., (num_new_authors, self.num_topics))
         self.state.gamma = np.vstack([self.state.gamma, gamma_new])
-
-        # Should not record the sstats, as we are goint to delete the new author after calculated.
-        try:
-            gammat, _ = self.inference(
-                corpus, self.author2doc, self.doc2author, rho(),
-                collect_sstats=False, chunk_doc_idx=corpus_doc_idx
-            )
-        except ValueError as e:
-            # Something went wrong! Rollback temporary changes in object and log
-            rollback_new_author_chages()
-            logging.exception(e)
-            return
+        for _pass in range(self.passes):
+            # Should not record the sstats, as we are goint to delete the new author after calculated.
+            try:
+                gammat, _ = self.inference(
+                    corpus, self.author2doc, self.doc2author, rho(),
+                    collect_sstats=False, chunk_doc_idx=corpus_doc_idx
+                )
+            except ValueError as e:
+                # Something went wrong! Rollback temporary changes in object and log
+                rollback_new_author_chages()
+                logging.exception(e)
+                return
 
         new_author_topics = self.get_author_topics(new_author_name, minimum_probability)
         rollback_new_author_chages()
         return new_author_topics
+
+    def predict_author(self, new_doc, top_n=10, smallest_author=1):
+        '''
+        Get table with similarities, author names, and author sizes.
+        Return `top_n` authors as a dataframe.
+
+        '''
+        from gensim import matutils
+        import pandas as pd
+
+        def similarity(vec1, vec2):
+            '''Get similarity between two vectors'''
+            dist = matutils.hellinger(matutils.sparse2full(vec1, self.num_topics), \
+                                      matutils.sparse2full(vec2, self.num_topics))
+            sim = 1.0 / (1.0 + dist)
+            return sim
+
+        def get_sims(vec):
+            '''Get similarity of vector to all authors.'''
+            sims = [similarity(vec, vec2) for vec2 in author_vecs]
+            return sims
+
+        author_vecs = [self.get_author_topics(author) for author in self.id2author.values()]
+        new_doc_topics = self.get_new_author_topics(new_doc)
+        # Get similarities.
+        sims = get_sims(new_doc_topics)
+
+        # Arrange author names, similarities, and author sizes in a list of tuples.
+        table = []
+        for elem in enumerate(sims):
+            author_name = self.id2author[elem[0]]
+            sim = elem[1]
+            author_size = len(self.author2doc[author_name])
+            if author_size >= smallest_author:
+                table.append((author_name, sim, author_size))
+
+        # Make dataframe and retrieve top authors.
+        df = pd.DataFrame(table, columns=['Author', 'Score', 'Size'])
+        df = df.sort_values('Score', ascending=False)[:top_n]
+
+        return df
 
     def get_author_topics(self, author_name, minimum_probability=None):
         """
