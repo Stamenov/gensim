@@ -940,7 +940,7 @@ class AuthorTopicModel(LdaModel):
         """
         # TODO: how should this function look like for get_new_author_topics?
         def rho():
-            return pow(self.offset + _pass + 1, -self.decay)
+            return pow(self.offset + 1 + 1, -self.decay)
 
         # Wrap in fuction to avoid code duplication.
         def rollback_new_author_chages():
@@ -979,18 +979,16 @@ class AuthorTopicModel(LdaModel):
 
         gamma_new = self.random_state.gamma(100., 1. / 100., (num_new_authors, self.num_topics))
         self.state.gamma = np.vstack([self.state.gamma, gamma_new])
-        for _pass in range(self.passes):
-            # Should not record the sstats, as we are goint to delete the new author after calculated.
-            try:
-                gammat, _ = self.inference(
-                    corpus, self.author2doc, self.doc2author, rho(),
-                    collect_sstats=False, chunk_doc_idx=corpus_doc_idx
-                )
-            except ValueError as e:
-                # Something went wrong! Rollback temporary changes in object and log
-                rollback_new_author_chages()
-                logging.exception(e)
-                return
+        # Should not record the sstats, as we are goint to delete the new author after calculated.
+        try:
+            gammat, _ = self.inference(
+                corpus, self.author2doc, self.doc2author, rho(),
+                collect_sstats=False, chunk_doc_idx=corpus_doc_idx
+            )
+        except ValueError as e:
+            # Something went wrong! Rollback temporary changes in object and log
+            rollback_new_author_chages()
+            logging.exception(e)
 
         new_author_topics = self.get_author_topics(new_author_name, minimum_probability)
         rollback_new_author_chages()
